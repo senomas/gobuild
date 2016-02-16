@@ -1,0 +1,22 @@
+# Logs and databases #
+######################
+*.log
+
+# OS generated files #
+######################
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Icon?
+Thumbs.db
+.lock
+backup-config.zip
+
+# DIRS
+bin
+.idea/workspace.xml
+.metadata
+.recommenders
+.sync
+.settings
+pkg
