@@ -65,7 +65,11 @@ func main() {
 
 	buildTask(cfg, "src-pre-build", buildSrc, nil)
 
+	buildTask(cfg, "build", buildExec, []string{"go", "build", "-v"})
+
 	buildTask(cfg, "install", buildExec, []string{"go", "install", "-v"})
+
+	buildTask(cfg, "test", buildExec, []string{"go", "test", "-v"})
 }
 
 func buildTask(cfg map[interface{}]interface{}, name string, fn fexec, prefix []string) {
