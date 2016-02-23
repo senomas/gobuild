@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
@@ -12,19 +13,25 @@ import (
 	"strings"
 )
 
-type fexec func(name string, param []string)
+type fexec func(name string, path, param []string)
 
 var env []string
 
-var params = make(map[string]string)
+var gparams = make(map[string]string)
 
 func main() {
 	var err error
 	var data []byte
 
+	// defer func() {
+	// 	if r := recover(); r != nil {
+	// 		fmt.Println("ERROR: ", r)
+	// 	}
+	// }()
+
 	for _, v := range os.Args[1:] {
 		if v == "-u" {
-			params["update"] = "true"
+			gparams["update"] = "true"
 		}
 	}
 
@@ -40,8 +47,7 @@ func main() {
 	env = append(env, fmt.Sprintf("GOPATH=%s", cd))
 
 	if data, err = ioutil.ReadFile("gobuild.yaml"); err != nil {
-		fmt.Printf("Error reading config\n%+v\n\n", err)
-		os.Exit(1)
+		panic(fmt.Sprintf("Error reading config\n%+v\n\n", err))
 	}
 
 	var cfg map[interface{}]interface{}
@@ -51,42 +57,92 @@ func main() {
 		panic(fmt.Sprintf("Error parsing config\n\n%+v\n", err))
 	}
 
-	// fmt.Printf("CONFIG\n%+v\n", cfg)
+	process1(cfg, "tool")
+	process1(cfg, "lib")
+	process1(cfg, "src-pre-build")
+	process1(cfg, "build")
+	process1(cfg, "install")
+	process1(cfg, "test")
 
-	if params["update"] == "true" {
-		buildTask(cfg, "tool", buildExec, []string{"go", "get", "-u", "-v"})
-
-		buildTask(cfg, "lib", buildExec, []string{"go", "get", "-u", "-v"})
-	} else {
-		buildTask(cfg, "tool", buildExec, []string{"go", "get", "-v"})
-
-		buildTask(cfg, "lib", buildExec, []string{"go", "get", "-v"})
-	}
-
-	buildTask(cfg, "src-pre-build", buildSrc, nil)
-
-	buildTask(cfg, "build", buildExec, []string{"go", "build", "-v"})
-
-	buildTask(cfg, "install", buildExec, []string{"go", "install", "-v"})
-
-	buildTask(cfg, "test", buildExec, []string{"go", "test", "-v"})
+	fmt.Printf("\n\n\n====== DONE GOBUILD ================================\n\n\n")
 }
 
-func buildTask(cfg map[interface{}]interface{}, name string, fn fexec, prefix []string) {
-	task, ok := cfg[name]
+func process1(cfg map[interface{}]interface{}, name string) {
+	value, ok := cfg[name]
 	if ok {
-		mv := task.(map[interface{}]interface{})
-		for k, v := range mv {
-			if str, ok := k.(string); ok {
-				process(fn, prefix, str, v)
-			} else {
-				panic(fmt.Sprintf("Error param %+v\n", k))
+		fmt.Printf("\n\n\n====== RUNNING %s ================================\n", strings.ToUpper(name))
+		process([]string{name}, value)
+	}
+}
+
+func process(path []string, value interface{}) {
+	var str string
+	var ok bool
+	if str, ok = value.(string); ok {
+		runExec(path, []string{str})
+	} else {
+		tt := reflect.TypeOf(value).Kind().String()
+		if tt == "slice" {
+			var ss []string
+			mv := value.([]interface{})
+			for _, v := range mv {
+				if str, ok = v.(string); ok {
+					ss = append(ss, str)
+				} else {
+					panic(fmt.Sprintf("Error param %+v\n", value))
+				}
 			}
+			runExec(path, ss)
+		} else if tt == "map" {
+			mv := value.(map[interface{}]interface{})
+			for mk, mv := range mv {
+				if str, ok = mk.(string); ok {
+					npath := append(path, str)
+					process(npath, mv)
+				} else {
+					panic(fmt.Sprintf("Error param [%+v] = [%+v]\n", mk, mv))
+				}
+			}
+		} else {
+			panic(fmt.Sprintf("Not supported %s\n%+v\n", tt, value))
 		}
 	}
 }
 
-func buildExec(name string, params []string) {
+func runExec(path, params []string) {
+	if path[0] == "src-pre-build" {
+		var fp bytes.Buffer
+		fp.WriteString("src")
+		for _, v := range path[1 : len(path)-1] {
+			fp.WriteRune(os.PathSeparator)
+			fp.WriteString(v)
+		}
+		var ps []string
+		for _, v := range regSplit(params[0], "\\s+") {
+			if v == "{}" {
+				ps = concat(ps, scan(fp.String(), path[len(path)-1]))
+			} else {
+				ps = append(ps, v)
+			}
+		}
+		osExec(path[1], ps)
+	} else {
+		var ps = []string{"go"}
+		p0 := path[0]
+		if p0 == "lib" || p0 == "tool" {
+			ps = concat(ps, []string{"get"})
+		} else {
+			ps = append(ps, p0)
+		}
+		if gparams["update"] == "true" {
+			ps = append(ps, "-u")
+		}
+		ps = concat(ps, params)
+		osExec(path[1], ps)
+	}
+}
+
+func osExec(name string, params []string) {
 	var err error
 	fmt.Printf("%s:\n%s\n", name, flatten(params))
 	cmd := exec.Command(params[0], params[1:]...)
@@ -100,59 +156,6 @@ func buildExec(name string, params []string) {
 	fmt.Println()
 }
 
-func buildSrc(name string, params []string) {
-	var err error
-	if len(params) != 1 {
-		panic(fmt.Sprintf("Invalid params length %+v", params))
-	}
-	filter := filterSrc(regexp.MustCompile(name))
-	var prg string
-	var gc []string
-	for k, v := range regSplit(params[0], "\\s+") {
-		if k == 0 {
-			prg = v
-		} else if v == "{}" {
-			gc = concat(gc, filter)
-		} else {
-			gc = append(gc, v)
-		}
-	}
-	fmt.Printf("%s:\n%s %s\n", name, prg, flatten(gc))
-	cmd := exec.Command(prg, gc...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err = cmd.Run(); err != nil {
-		os.Exit(1)
-	}
-	fmt.Println()
-}
-
-func process(fn fexec, prefix []string, k string, value interface{}) {
-	var str string
-	var ok bool
-	if str, ok = value.(string); ok {
-		fn(k, append(prefix, str))
-	} else {
-		tt := reflect.TypeOf(value).Kind().String()
-		if tt == "slice" {
-			var ss []string
-			mv := value.([]interface{})
-			for _, v := range mv {
-				if str, ok = v.(string); ok {
-					ss = append(ss, str)
-				} else {
-					panic(fmt.Sprintf("Error param %+v\n", value))
-				}
-			}
-			fn(k, concat(prefix, ss))
-		} else {
-			fmt.Printf("Not supported %s\n%+v\n", tt, value)
-			os.Exit(1)
-		}
-	}
-}
-
 func concat(p1, p2 []string) []string {
 	for _, v := range p2 {
 		p1 = append(p1, v)
@@ -160,13 +163,13 @@ func concat(p1, p2 []string) []string {
 	return p1
 }
 
-func filterSrc(filter *regexp.Regexp) []string {
+func scan(path string, pattern string) []string {
 	var files []string
-	filterSrcRec(&files, "src", "src", filter)
+	doScan(&files, path, pattern)
 	return files
 }
 
-func filterSrcRec(files *[]string, path, name string, filter *regexp.Regexp) {
+func doScan(files *[]string, path string, pattern string) {
 	var fz []os.FileInfo
 	var err error
 	if fz, err = ioutil.ReadDir(path); err != nil {
@@ -174,15 +177,19 @@ func filterSrcRec(files *[]string, path, name string, filter *regexp.Regexp) {
 	}
 	for _, f := range fz {
 		var fn string
-		if name == "" {
+		if path == "" {
 			fn = f.Name()
 		} else {
-			fn = name + "/" + f.Name()
+			fn = path + "/" + f.Name()
 		}
 		if f.IsDir() {
-			filterSrcRec(files, path+"/"+f.Name(), fn, filter)
+			doScan(files, path+"/"+f.Name(), pattern)
 		} else {
-			if filter.MatchString(fn) {
+			var b bool
+			if b, err = filepath.Match(pattern, f.Name()); err != nil {
+				panic(err)
+			}
+			if b {
 				*files = append(*files, fn)
 			}
 		}
