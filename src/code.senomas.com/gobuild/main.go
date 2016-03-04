@@ -153,7 +153,11 @@ func runExec(path, params []string) {
 			for _, c := range params[0] {
 				switch state {
 				case 0:
-					if !unicode.IsSpace(c) {
+					if c == '\'' {
+						state = 10
+					} else if c == '"' {
+						state = 20
+					} else if !unicode.IsSpace(c) {
 						buf.WriteRune(c)
 						state = 1
 					}
@@ -162,26 +166,22 @@ func runExec(path, params []string) {
 						xp = append(xp, buf.String())
 						buf.Reset()
 						state = 0
-					} else if c == '\'' {
-						buf.WriteRune(c)
-						state = 10
-					} else if c == '"' {
-						buf.WriteRune(c)
-						state = 20
 					} else {
 						buf.WriteRune(c)
 					}
 				case 10:
 					if c == '\'' {
-						buf.WriteRune(c)
-						state = 1
+						xp = append(xp, buf.String())
+						buf.Reset()
+						state = 0
 					} else {
 						buf.WriteRune(c)
 					}
 				case 20:
 					if c == '"' {
-						buf.WriteRune(c)
-						state = 1
+						xp = append(xp, buf.String())
+						buf.Reset()
+						state = 0
 					} else {
 						buf.WriteRune(c)
 					}
