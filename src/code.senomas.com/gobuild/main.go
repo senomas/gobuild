@@ -11,13 +11,21 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"syscall"
+	"unicode"
 )
 
 type fexec func(name string, path, param []string)
 
-var env []string
-
-var gparams = make(map[string]string)
+var (
+	env     []string
+	gparams = map[string][]string{
+		"build": []string{},
+		"get":   []string{},
+		"run":   []string{},
+		"test":  []string{},
+	}
+)
 
 func main() {
 	var err error
@@ -29,9 +37,19 @@ func main() {
 	// 	}
 	// }()
 
+	var base = "build"
 	for _, v := range os.Args[1:] {
-		if v == "-u" {
-			gparams["update"] = "true"
+		switch v {
+		default:
+			gparams[base] = append(gparams[base], v)
+		case "--build":
+			base = "build"
+		case "--get":
+			base = "get"
+		case "--run":
+			base = "run"
+		case "--test":
+			base = "test"
 		}
 	}
 
@@ -63,6 +81,7 @@ func main() {
 	process1(cfg, "build")
 	process1(cfg, "install")
 	process1(cfg, "test")
+	process1(cfg, "exec")
 
 	fmt.Printf("\n\n\n====== DONE GOBUILD ================================\n\n\n")
 }
@@ -126,16 +145,64 @@ func runExec(path, params []string) {
 			}
 		}
 		osExec(path[1], ps)
+	} else if path[0] == "exec" {
+		if len(params) == 1 {
+			var xp []string
+			var buf bytes.Buffer
+			var state = 0
+			for _, c := range params[0] {
+				switch state {
+				case 0:
+					if !unicode.IsSpace(c) {
+						buf.WriteRune(c)
+						state = 1
+					}
+				case 1:
+					if unicode.IsSpace(c) {
+						xp = append(xp, buf.String())
+						buf.Reset()
+						state = 0
+					} else if c == '\'' {
+						buf.WriteRune(c)
+						state = 10
+					} else if c == '"' {
+						buf.WriteRune(c)
+						state = 20
+					} else {
+						buf.WriteRune(c)
+					}
+				case 10:
+					if c == '\'' {
+						buf.WriteRune(c)
+						state = 1
+					} else {
+						buf.WriteRune(c)
+					}
+				case 20:
+					if c == '"' {
+						buf.WriteRune(c)
+						state = 1
+					} else {
+						buf.WriteRune(c)
+					}
+				}
+			}
+			if state == 1 {
+				xp = append(xp, buf.String())
+			}
+			osExec(path[1], xp)
+		} else {
+			osExec(path[1], params)
+		}
 	} else {
 		var ps = []string{"go"}
 		p0 := path[0]
 		if p0 == "lib" || p0 == "tool" {
 			ps = concat(ps, []string{"get"})
+			ps = concat(ps, gparams["get"])
 		} else {
 			ps = append(ps, p0)
-		}
-		if gparams["update"] == "true" {
-			ps = append(ps, "-u")
+			ps = concat(ps, gparams[p0])
 		}
 		ps = concat(ps, params)
 		osExec(path[1], ps)
@@ -145,13 +212,25 @@ func runExec(path, params []string) {
 func osExec(name string, params []string) {
 	var err error
 	fmt.Printf("%s:\n%s\n", name, flatten(params))
-	cmd := exec.Command(params[0], params[1:]...)
+	var cmd *exec.Cmd
+	if len(params) == 1 {
+		cmd = exec.Command(params[0])
+	} else {
+		cmd = exec.Command(params[0], params[1:]...)
+	}
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err = cmd.Run(); err != nil {
-		os.Exit(1)
+	if err = cmd.Start(); err != nil {
+		panic(err)
+	}
+	if err = cmd.Wait(); err != nil {
+		if exiterr, ok := err.(*exec.ExitError); ok {
+			if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
+				os.Exit(status.ExitStatus())
+			}
+		}
 	}
 	fmt.Println()
 }
