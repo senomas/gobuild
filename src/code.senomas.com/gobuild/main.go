@@ -68,8 +68,7 @@ func main() {
 		panic(fmt.Sprintf("Error reading config\n%+v\n\n", err))
 	}
 
-	var cfg map[interface{}]interface{}
-	cfg = make(map[interface{}]interface{})
+	var cfg = yaml.MapSlice{}
 
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		panic(fmt.Sprintf("Error parsing config\n\n%+v\n", err))
@@ -86,45 +85,30 @@ func main() {
 	fmt.Printf("\n\n\n====== DONE GOBUILD ================================\n\n\n")
 }
 
-func process1(cfg map[interface{}]interface{}, name string) {
-	value, ok := cfg[name]
-	if ok {
-		fmt.Printf("\n\n\n====== RUNNING %s ================================\n", strings.ToUpper(name))
-		process([]string{name}, value)
+func process1(cfg yaml.MapSlice, name string) {
+	for _, c := range cfg {
+		if c.Key == name {
+			fmt.Printf("\n\n\n====== RUNNING %s ================================\n", strings.ToUpper(name))
+			process([]string{name}, c.Value)
+		}
 	}
 }
 
 func process(path []string, value interface{}) {
-	var str string
-	var ok bool
-	if str, ok = value.(string); ok {
+	if str, ok := value.(string); ok {
 		runExec(path, []string{str})
+	} else if ov, ok := value.(yaml.MapSlice); ok {
+		for _, mm := range ov {
+			if mmk, ok := mm.Key.(string); ok {
+				npath := append(path, mmk)
+				process(npath, mm.Value)
+			} else {
+				panic(fmt.Sprintf("Error param [%+v] = [%+v]\n", mm.Key, mm.Value))
+			}
+		}
 	} else {
 		tt := reflect.TypeOf(value).Kind().String()
-		if tt == "slice" {
-			var ss []string
-			mv := value.([]interface{})
-			for _, v := range mv {
-				if str, ok = v.(string); ok {
-					ss = append(ss, str)
-				} else {
-					panic(fmt.Sprintf("Error param %+v\n", value))
-				}
-			}
-			runExec(path, ss)
-		} else if tt == "map" {
-			mv := value.(map[interface{}]interface{})
-			for mk, mv := range mv {
-				if str, ok = mk.(string); ok {
-					npath := append(path, str)
-					process(npath, mv)
-				} else {
-					panic(fmt.Sprintf("Error param [%+v] = [%+v]\n", mk, mv))
-				}
-			}
-		} else {
-			panic(fmt.Sprintf("Not supported %s\n%+v\n", tt, value))
-		}
+		panic(fmt.Sprintf("Not supported %s\n%+v\n", tt, value))
 	}
 }
 
